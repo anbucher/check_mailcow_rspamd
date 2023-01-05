@@ -362,6 +362,7 @@ def main():
                 state = STATE_WARN
             else:
                 msg = 'OK - ' + str(diffSecs) + 's since last mail'
+                msg += '\nThroughput: {} messages/day'.format(metrics['throughput24h'])
                 state = STATE_OK
 
     except Exception as ex:
