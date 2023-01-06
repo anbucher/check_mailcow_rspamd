@@ -14,6 +14,8 @@ import argparse
 from difflib import diff_bytes
 import sys
 import json
+import operator
+import collections
 import time
 import requests
 from requests.structures import CaseInsensitiveDict
@@ -155,6 +157,79 @@ def coe(result, state=STATE_UNKNOWN):
     print(result[1])
     sys.exit(state)
 
+def get_table(data, cols, header=None, strip=True, sort_by_key=None, sort_order_reverse=False):
+    """Takes a list of dictionaries, formats the data, and returns
+    the formatted data as a text table.
+    Required Parameters:
+        data - Data to process (list of dictionaries). (Type: List)
+        cols - List of cols in the dictionary. (Type: List)
+    Optional Parameters:
+        header - The table header. (Type: List)
+        strip - Strip/Trim values or not. (Type: Boolean)
+        sort_by_key - The key to sort by. (Type: String)
+        sort_order_reverse - Default sort order is ascending, if
+            True sort order will change to descending. (Type: bool)
+    Inspired by
+    https://www.calazan.com/python-function-for-displaying-a-list-of-dictionaries-in-table-format/
+    """
+    if not data:
+        return ''
+
+    # Sort the data if a sort key is specified (default sort order is ascending)
+    if sort_by_key:
+        data = sorted(data,
+                      key=operator.itemgetter(sort_by_key),
+                      reverse=sort_order_reverse)
+
+    # If header is not empty, create a list of dictionary from the cols and the header and
+    # insert it before first row of data
+    if header:
+        header = dict(zip(cols, header))
+        data.insert(0, header)
+
+    # prepare data: decode from (mostly) UTF-8 to Unicode, optionally strip values and get
+    # the maximum length per column
+    column_widths = collections.OrderedDict()
+    for idx, row in enumerate(data):
+        for col in cols:
+            try:
+                if strip:
+                    data[idx][col] = str(row[col]).strip()
+                else:
+                    data[idx][col] = str(row[col])
+            except:
+                return 'Unknown column "{}"'.format(col)
+            # get the maximum length
+            try:
+                column_widths[col] = max(column_widths[col], len(data[idx][col]))
+            except:
+                column_widths[col] = len(data[idx][col])
+
+    if header:
+        # Get the length of each column and create a '---' divider based on that length
+        header_divider = []
+        for col, width in column_widths.items():
+            header_divider.append('-' * width)
+
+        # Insert the header divider below the header row
+        header_divider = dict(zip(cols, header_divider))
+        data.insert(1, header_divider)
+
+    # create the output
+    table = ''
+    cnt = 0
+    for row in data:
+        tmp = ''
+        for col, width in column_widths.items():
+            if cnt != 1:
+                tmp += '{:<{}} ! '.format(row[col], width)
+            else:
+                # header row
+                tmp += '{:<{}}-+-'.format(row[col], width)
+        cnt += 1
+        table += tmp[:-2] + '\n'
+
+    return table
 
 ########### specific check functions ###########
 
@@ -284,24 +359,62 @@ def get_metrics(data, minBack):
         'total': 0
     }
 
+    incoming = {}
+    outgoing = {}
+
     try:
 
         now = int(time.time()) 
 
         for mail in data:
 
-            # check if mail is within timeframe
+            # calc timedifference for current mail
             mailReceived = int(mail['unix_time'])
             diffInSecs = (abs(now - mailReceived ))
 
-            # timeframe for 24h throughput
+            # check applied action
+            action = mail['action']
+
+            # timeframe for 24h throughput / spam ratio
             if diffInSecs < (24*60*60):
                 metrics['throughput24h'] += 1
 
+                # Spam Ratio Calculation
+                # incoming
+                if mail['user'] == 'unknown' and len(mail['rcpt_smtp']) > 0:
+
+                    d = incoming
+                    user = str(mail['rcpt_smtp'][0]).lower()
+                # outgoing
+                elif mail['user'] != 'unknown':
+                    d = outgoing
+                    user = mail['user']
+
+                # check action
+                if action== 'no action' :
+                    category = 'ham'
+                elif action != 'greylist' and action != 'soft reject':
+                    category = 'spam'
+
+                # check if user exists
+                if user not in d:
+                    d[user] = {
+                        'spam': 0, 
+                        'ham': 0,
+                        'total': 0,
+                        'ratio': 1
+                    }
+
+                d[user][category]+= 1
+                d[user]['total'] = d[user]['spam'] + d[user]['ham']
+                d[user]['ratio'] = 1 - (d[user]['ham'] / d[user]['total'])
+
+
+
+            # check if mail is within given timeframe           
             if diffInSecs < int(minBack) * 60:
                 
                 # check action and count
-                action = mail['action']
                 if(action):
                     if action in metrics:
                         metrics[action] += 1
@@ -313,8 +426,14 @@ def get_metrics(data, minBack):
                     else: 
                         metrics['total'] = 1
 
+        # sort spam ratio dicts and assign to metrics
+        incomingTop10 = sorted(incoming.items(), reverse = True, key = lambda x: x[1]['total'])[0:10]
+        outgoingTop10 = sorted(outgoing.items(), reverse = True, key = lambda x: x[1]['total'])[0:10]
+        metrics['incomingTop10BySpamRatio'] = sorted(incomingTop10, reverse = True, key = lambda x: x[1]['ratio'])
+        metrics['outgoingTop10BySpamRatio'] = sorted(outgoingTop10, reverse = True, key = lambda x: x[1]['ratio'])
+
         return (True, metrics)
-    except:
+    except Exception as ex:
         return (False, 'ValueError: Metrics could not be parsed') 
 
 def main():
@@ -331,6 +450,7 @@ def main():
     msg = ''
     state = STATE_OK
     perfdata = ''
+    table_values = []
 
     # Build API path
     path = args.SERVER_ADDRESS + DEFAULT_API_PATH + '/' + str(DEFAULT_HISTORY_COUNT)
@@ -349,6 +469,13 @@ def main():
     perfdata += get_perfdata('greylist', metrics['greylist'], None, None, None, 0, None)
     perfdata += get_perfdata('no action', metrics['no action'], None, None, None, 0, None)
 
+    # Add Top5 Spam Ratio Users
+    for user in metrics['incomingTop10BySpamRatio']:
+        table_values.append({
+            'name': user[0],     # https://github.com/Linuxfabrik/monitoring-plugins/issues/586
+            'spamRatio': '{:.2f}'.format(round(user[1]['ratio'],4)*100),
+            'mailsTotal': '{}'.format(user[1]['total']),
+            })
 
 
     # check warn and crit thresholds
@@ -363,6 +490,12 @@ def main():
             else:
                 msg = 'OK - ' + str(diffSecs) + 's since last mail'
                 msg += '\nThroughput: {} messages/day'.format(metrics['throughput24h'])
+                msg += '\nIncoming 24h Stats:'
+                msg += '\n' + get_table(
+                    table_values,
+                    ['name', 'spamRatio', 'mailsTotal'],
+                    header=['Recipient', 'Spam %', 'Mails Total '],
+                    )
                 state = STATE_OK
 
     except Exception as ex:
