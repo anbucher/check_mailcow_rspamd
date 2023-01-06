@@ -22,7 +22,7 @@ from requests.structures import CaseInsensitiveDict
 from traceback import format_exc
 
 __author__ = 'Andreas Bucher'
-__version__ = '2023010501'
+__version__ = '2023010601'
 
 
 DESCRIPTION = """This plugin lets you check the mailcow rspamd stats"""
@@ -60,7 +60,7 @@ DEFAULT_CRIT = 3600 # seconds
 
 # Author of state definition
 # __author__ = 'Andreas Bucher'
-# __version__ = '2023010501'
+# __version__ = '2023010601'
 
 
 STATE_OK = 0
