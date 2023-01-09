@@ -395,6 +395,8 @@ def get_metrics(data, minBack):
                     category = 'ham'
                 elif action != 'greylist' and action != 'soft reject':
                     category = 'spam'
+                else:
+                    continue                    
 
                 # check if user exists
                 if user not in d:
